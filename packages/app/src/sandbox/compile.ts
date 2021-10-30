@@ -32,7 +32,10 @@ import {
 import defaultBoilerplates from './boilerplates/default-boilerplates';
 import createCodeSandboxOverlay from './codesandbox-overlay';
 import getPreset from './eval';
-import handleExternalResources from './external-resources';
+import handleExternalResources, {
+  ExternalResource,
+  getExternalGlobals,
+} from './external-resources';
 import setScreen, { resetScreen } from './status-screen';
 import { showRunOnClick } from './status-screen/run-on-click';
 import { SCRIPT_VERSION } from '.';
@@ -440,7 +443,7 @@ interface CompileOptions {
   sandboxId?: string | null;
   modules: { [path: string]: Module };
   customNpmRegistries?: NpmRegistry[];
-  externalResources: string[];
+  externalResources: ExternalResource[];
   hasActions?: boolean;
   isModuleView?: boolean;
   template: TemplateType;
@@ -611,8 +614,8 @@ async function compile(opts: CompileOptions) {
 
     if (shouldReloadManager || firstLoad) {
       // Now initialize the data the manager can only use once dependencies are loaded
-
-      manager.setManifest(manifest);
+      const dependencyGlobals = getExternalGlobals(externalResources);
+      manager.setManifest({ ...manifest, dependencyGlobals });
       // We save the state of transpiled modules, and load it here again. Gives
       // faster initial loads.
       usedCache = await consumeCache(manager);

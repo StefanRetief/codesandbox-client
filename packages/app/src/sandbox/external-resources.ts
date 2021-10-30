@@ -1,4 +1,10 @@
-function getExternalResourcesConcatenation(resources: Array<string>) {
+export interface ExternalResourceOptions {
+  global: string;
+  name: string;
+}
+export type ExternalResource = string | [string, ExternalResourceOptions];
+
+function getExternalResourcesConcatenation(resources: Array<ExternalResource>) {
   return resources.join('');
 }
 /* eslint-disable no-cond-assign */
@@ -82,15 +88,32 @@ function waitForLoaded() {
 
 let cachedExternalResources = '';
 
-export default async function handleExternalResources(externalResources) {
-  const extResString = getExternalResourcesConcatenation(externalResources);
+export default async function handleExternalResources(
+  externalResources: Array<ExternalResource>
+) {
+  const normalizedExtRes = externalResources.map(val =>
+    Array.isArray(val) ? val[0] : val
+  );
+  const extResString = getExternalResourcesConcatenation(normalizedExtRes);
   if (extResString !== cachedExternalResources) {
     clearExternalResources();
-    await Promise.all(externalResources.map(addResource));
+    await Promise.all(normalizedExtRes.map(addResource));
     cachedExternalResources = extResString;
 
     return waitForLoaded();
   }
 
   return Promise.resolve();
+}
+
+export function getExternalGlobals(
+  externalResources: Array<ExternalResource>
+): { [name: string]: string } {
+  const globalsDependencies = externalResources
+    .filter(val => Array.isArray(val))
+    .map(val => val[1] as ExternalResourceOptions);
+  return globalsDependencies.reduce((prev, option) => {
+    prev[option.name] = option.global;
+    return prev;
+  }, {});
 }

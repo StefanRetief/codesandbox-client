@@ -1026,6 +1026,10 @@ export class TranspiledModule {
           return resolveDependency(path);
         }
 
+        if (manager.manifest.dependencyGlobals[path]) {
+          return manager.getDependencyGlobal(path);
+        }
+
         const requiredTranspiledModule = manager.resolveTranspiledModuleSync(
           path,
           localModule.path

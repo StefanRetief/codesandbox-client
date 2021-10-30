@@ -77,6 +77,9 @@ export type Manifest = {
       [depName: string]: string;
     };
   };
+  dependencyGlobals: {
+    [name: string]: string;
+  };
 };
 
 interface IRemoteModuleResult {
@@ -173,6 +176,7 @@ export default class Manager implements IEvaluator {
     dependencies: [],
     dependencyDependencies: {},
     dependencyAliases: {},
+    dependencyGlobals: {},
   };
 
   webpackHMR: boolean;
@@ -394,6 +398,7 @@ export default class Manager implements IEvaluator {
       dependencies: [],
       dependencyDependencies: {},
       dependencyAliases: {},
+      dependencyGlobals: {},
     };
 
     Object.keys(this.manifest.contents).forEach(path => {
@@ -695,6 +700,10 @@ export default class Manager implements IEvaluator {
     }
 
     return path;
+  }
+
+  getDependencyGlobal(path: string) {
+    return (global as any)[this.manifest.dependencyGlobals[path]];
   }
 
   /**
