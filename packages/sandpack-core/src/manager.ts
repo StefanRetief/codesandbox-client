@@ -1,6 +1,5 @@
 import { flattenDeep, uniq, values } from 'lodash-es';
 import { Protocol } from 'codesandbox-api';
-import { default as bresolve } from 'browser-resolve';
 import fs from 'fs';
 import gensync from 'gensync';
 
@@ -13,6 +12,7 @@ import { endMeasure, now } from '@codesandbox/common/lib/utils/metrics';
 import DependencyNotFoundError from 'sandbox-hooks/errors/dependency-not-found-error';
 import ModuleNotFoundError from 'sandbox-hooks/errors/module-not-found-error';
 
+import { ResolverCache, resolveAsync, resolveSync } from './resolver/resolver';
 import { generateBenchmarkInterface } from './utils/benchmark';
 import { Module } from './types/module';
 import {
@@ -31,7 +31,6 @@ import {
   getAliasVersion,
   getDependencyName,
 } from './utils/get-dependency-name';
-import { packageFilter } from './utils/resolve-utils';
 
 import {
   ignoreNextCache,
@@ -127,6 +126,7 @@ type TManagerOptions = {
    */
   hasFileResolver: boolean;
   versionIdentifier: string;
+  reactDevTools?: 'legacy' | 'latest';
 };
 
 function triggerFileWatch(path: string, type: 'rename' | 'change') {
@@ -168,6 +168,8 @@ export default class Manager implements IEvaluator {
     };
   };
 
+  reactDevTools?: 'legacy' | 'latest';
+
   envVariables: { [envName: string]: string } = {};
   preset: Preset;
   modules: ModuleObject;
@@ -198,6 +200,7 @@ export default class Manager implements IEvaluator {
   // All paths are resolved at least twice: during transpilation and evaluation.
   // We can improve performance by almost 2x in this scenario if we cache the lookups
   cachedPaths: { [path: string]: { [path: string]: string } };
+  resolverCache: ResolverCache;
 
   configurations: ParsedConfigurationFiles;
 
@@ -229,6 +232,8 @@ export default class Manager implements IEvaluator {
     this.stage = 'transpilation';
     this.version = options.versionIdentifier;
     this.esmodules = new Map();
+    this.resolverCache = new Map();
+    this.reactDevTools = options.reactDevTools;
 
     /**
      * Contribute the file fetcher, which needs the manager to resolve the files
@@ -281,6 +286,12 @@ export default class Manager implements IEvaluator {
 
   prependNpmProtocolDefinition(protocol: ProtocolDefinition) {
     prependToContributedProtocols([protocol]);
+  }
+
+  // Call this whenever the file structure or modules change, so before each compilation...
+  resetResolverCache() {
+    this.cachedPaths = {};
+    this.resolverCache = new Map();
   }
 
   async evaluate(path: string, baseTModule?: TranspiledModule): Promise<any> {
@@ -564,8 +575,8 @@ export default class Manager implements IEvaluator {
   }
 
   removeModule(module: Module) {
-    // Reset all cached paths because file structure changed
-    this.cachedPaths = {};
+    // File structure changed, reset resolver cache
+    this.resetResolverCache();
 
     const existingModule = this.transpiledModules[module.path];
 
@@ -765,7 +776,7 @@ export default class Manager implements IEvaluator {
     defaultExtensions?: Array<string>;
   }): Promise<Module> {
     const { path, query = '', defaultExtensions = DEFAULT_EXTENSIONS } = opts;
-    let parentPath = opts.parentPath || '/';
+    let parentPath = opts.parentPath || '/index.js';
 
     const esmoduleUrl = getESModuleUrl(parentPath, path);
     // Handle ESModule import
@@ -826,25 +837,13 @@ export default class Manager implements IEvaluator {
       }
 
       try {
-        resolvedPath = await new Promise((resolvePromise, rejectPromise) => {
-          bresolve(
-            shimmedPath,
-            {
-              // @ts-ignore
-              filename: parentPath,
-              extensions: defaultExtensions.map(ext => '.' + ext),
-              isFile: this.isFile.errback,
-              readFile: this.readFile.errback,
-              packageFilter,
-              moduleDirectory: this.getModuleDirectories(),
-            },
-            (err: Error | undefined, foundPath: string) => {
-              if (err) {
-                return rejectPromise(err);
-              }
-              return resolvePromise(foundPath);
-            }
-          );
+        resolvedPath = await resolveAsync(shimmedPath, {
+          filename: parentPath,
+          extensions: defaultExtensions.map(ext => '.' + ext),
+          isFile: this.isFile,
+          readFile: this.readFile,
+          moduleDirectories: this.getModuleDirectories(),
+          resolverCache: this.resolverCache,
         });
 
         endMeasure(measureKey, { silent: true, lastTime: measureStartTime });
@@ -983,14 +982,13 @@ export default class Manager implements IEvaluator {
       }
 
       try {
-        resolvedPath = bresolve.sync(shimmedPath, {
-          // @ts-ignore
+        resolvedPath = resolveSync(shimmedPath, {
           filename: parentPath,
           extensions: defaultExtensions.map(ext => '.' + ext),
-          isFile: this.isFile.sync,
-          readFileSync: this.readFile.sync,
-          packageFilter,
-          moduleDirectory: this.getModuleDirectories(),
+          isFile: this.isFile,
+          readFile: this.readFile,
+          moduleDirectories: this.getModuleDirectories(),
+          resolverCache: this.resolverCache,
         });
         endMeasure(measureKey, { silent: true, lastTime: measureStartTime });
 
@@ -1058,12 +1056,12 @@ export default class Manager implements IEvaluator {
     query: string = '',
     ignoredExtensions: Array<string> = this.preset.ignoredExtensions
   ): Promise<TranspiledModule> {
-    return fetchModule(
-      path,
-      currentTModule,
-      this,
-      ignoredExtensions
-    ).then(module => this.getTranspiledModule(module, query));
+    return fetchModule(path, currentTModule, this, ignoredExtensions).then(
+      module => {
+        this.resetResolverCache();
+        return this.getTranspiledModule(module, query);
+      }
+    );
   }
 
   updateModule(m: Module) {
@@ -1216,17 +1214,16 @@ export default class Manager implements IEvaluator {
     const addedModules: Array<Module> = [];
     const updatedModules: Array<Module> = [];
 
+    // File structure likely changed, reset resolver cache
+    this.resetResolverCache();
+
     Object.keys(modules).forEach(k => {
       const module: Module = modules[k];
       const mirrorModule = this.transpiledModules[k];
 
       if (!mirrorModule) {
-        // File structure changed, reset cached paths
-        this.cachedPaths = {};
         addedModules.push(module);
       } else if (mirrorModule.module.code !== module.code) {
-        // File structure changed, reset cached paths
-        this.cachedPaths = {};
         updatedModules.push(module);
       }
     });
@@ -1423,7 +1420,6 @@ export default class Manager implements IEvaluator {
           // First create tModules for all the saved modules, so we have references
           Object.keys(serializedTModules).forEach(id => {
             const sTModule = serializedTModules[id];
-
             const tModule = this.addTranspiledModule(
               sTModule.module,
               sTModule.query
@@ -1434,7 +1430,6 @@ export default class Manager implements IEvaluator {
           await Promise.all(
             Object.keys(tModules).map(id => {
               const tModule = tModules[id];
-
               return tModule.load(serializedTModules[id], tModules, this);
             })
           );

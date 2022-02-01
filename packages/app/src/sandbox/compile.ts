@@ -317,7 +317,12 @@ async function initializeManager(
   {
     hasFileResolver = false,
     customNpmRegistries = [],
-  }: { hasFileResolver?: boolean; customNpmRegistries?: NpmRegistry[] } = {}
+    reactDevTools,
+  }: {
+    hasFileResolver?: boolean;
+    customNpmRegistries?: NpmRegistry[];
+    reactDevTools?: 'legacy' | 'latest';
+  } = {}
 ) {
   const newManager = new Manager(
     sandboxId,
@@ -326,6 +331,7 @@ async function initializeManager(
     {
       hasFileResolver,
       versionIdentifier: SCRIPT_VERSION,
+      reactDevTools,
     }
   );
 
@@ -455,6 +461,7 @@ interface CompileOptions {
   hasFileResolver?: boolean;
   disableDependencyPreprocessing?: boolean;
   clearConsoleDisabled?: boolean;
+  reactDevTools?: 'legacy' | 'latest';
 }
 
 async function compile(opts: CompileOptions) {
@@ -474,6 +481,7 @@ async function compile(opts: CompileOptions) {
     hasFileResolver = false,
     disableDependencyPreprocessing = false,
     clearConsoleDisabled = false,
+    reactDevTools,
   } = opts;
 
   if (firstLoad) {
@@ -541,6 +549,7 @@ async function compile(opts: CompileOptions) {
       (await initializeManager(sandboxId, template, modules, configurations, {
         hasFileResolver,
         customNpmRegistries,
+        reactDevTools,
       }));
 
     let dependencies: NPMDependencies = getDependencies(
@@ -608,7 +617,7 @@ async function compile(opts: CompileOptions) {
         template,
         modules,
         configurations,
-        { hasFileResolver }
+        { hasFileResolver, reactDevTools }
       );
     }
 
@@ -904,7 +913,7 @@ let runningTask = null;
 async function executeTaskIfAvailable() {
   if (tasks.length) {
     runningTask = tasks.pop();
-    await compile(runningTask);
+    await compile(runningTask).catch(console.error);
     runningTask = null;
 
     executeTaskIfAvailable();
